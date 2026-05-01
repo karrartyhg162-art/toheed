@@ -1,0 +1,21 @@
+# Telegram Sessions
+*.session
+*.session-journal
+
+# Logs
+*.log
+bot.log
+
+# Cache
+__pycache__/
+*.pyc
+
+# Local Data and Config
+data/
+unified_data.json
+accounts.json
+.env
+
+# OS Files
+.DS_Store
+Thumbs.db
