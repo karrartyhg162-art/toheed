@@ -10,6 +10,7 @@ from telethon.errors import (
 )
 from telethon.errors.rpcerrorlist import RPCError
 from telethon.sessions import StringSession
+from telethon.tl.types import DocumentAttributeSticker, InputStickerSetEmpty
 from config import API_ID, API_HASH, SESSION_NAME, STRING_SESSION, OWNER_ID
 from database import DataManager
 from distributions import (gaussian_delay, gaussian_pick_index, weighted_pick_index,
@@ -68,7 +69,7 @@ def _cleanup_latest_msgs():
 # ═══════════════════════════════════════
 # دالة إظهار "جاري الكتابة" وإرسال
 # ═══════════════════════════════════════
-async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, file_path=None):
+async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, file_path=None, item_type=None):
     """إرسال مع إظهار Typing... للطرف الآخر"""
     try:
         # إظهار جاري الكتابة أثناء التأخير
@@ -87,7 +88,10 @@ async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, fil
 
         # إرسال المحتوى
         if file_path:
-            msg = await client.send_file(chat_id, file_path, reply_to=reply_to)
+            kwargs = {'reply_to': reply_to}
+            if item_type == "sticker":
+                kwargs['attributes'] = [DocumentAttributeSticker(alt='', stickerset=InputStickerSetEmpty())]
+            msg = await client.send_file(chat_id, file_path, **kwargs)
         elif text:
             msg = await client.send_message(chat_id, text, reply_to=reply_to)
         else:
@@ -416,7 +420,7 @@ async def _run_sequential(client, chat_id, target_uid, reply_to_id, section_name
                 else:
                     fp = item.get("file_path", "")
                     if fp and os.path.exists(fp):
-                        msg = await send_with_typing(client, chat_id, delay, reply_to=rid, file_path=fp)
+                        msg = await send_with_typing(client, chat_id, delay, reply_to=rid, file_path=fp, item_type=item["type"])
 
                 if msg:
                     db.track_message(chat_id, msg.id)
