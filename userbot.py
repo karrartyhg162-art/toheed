@@ -10,12 +10,11 @@ from telethon.errors import (
 )
 from telethon.errors.rpcerrorlist import RPCError
 from telethon.sessions import StringSession
-from telethon.tl.types import DocumentAttributeSticker, InputStickerSetEmpty
 from config import API_ID, API_HASH, SESSION_NAME, STRING_SESSION, OWNER_ID
 from database import DataManager
 from distributions import (gaussian_delay, gaussian_pick_index, weighted_pick_index,
                            weibull_delay, weibull_security_delay, weibull_retry_delay,
-                           length_based_delay, random_range_delay)
+                           length_based_delay, random_range_delay, smart_content_delay)
 
 logger = logging.getLogger(__name__)
 db = DataManager()
@@ -69,53 +68,80 @@ def _cleanup_latest_msgs():
 # ═══════════════════════════════════════
 # دالة إظهار "جاري الكتابة" وإرسال
 # ═══════════════════════════════════════
-async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, file_path=None, item_type=None):
-    """إرسال مع إظهار Typing... للطرف الآخر"""
-    try:
-        # إظهار جاري الكتابة أثناء التأخير
-        remaining = delay
-        while remaining > 0:
-            if emergency_stop_flag:
-                raise asyncio.CancelledError()
-            chunk = min(remaining, 4.0)
-            try:
-                async with client.action(chat_id, 'typing'):
-                    await asyncio.sleep(chunk)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # إذا فشل إظهار الكتابة نكمل بدونه
-                await asyncio.sleep(chunk)
-            remaining -= chunk
+def _is_sticker_file(file_path):
+    """التحقق مما إذا كان الملف ملصقاً بناءً على الامتداد"""
+    if not file_path:
+        return False
+    ext = os.path.splitext(file_path)[1].lower()
+    return ext in ('.webp', '.webm', '.tgs')
 
-        # إرسال المحتوى
-        if file_path:
-            kwargs = {'reply_to': reply_to}
-            if item_type == "sticker":
-                kwargs['attributes'] = [DocumentAttributeSticker(alt='', stickerset=InputStickerSetEmpty())]
-            msg = await client.send_file(chat_id, file_path, **kwargs)
-        elif text:
-            msg = await client.send_message(chat_id, text, reply_to=reply_to)
-        else:
-            return None
-        return msg
-    except FloodWaitError as e:
-        logger.warning(f"FloodWait in send_with_typing: {e.seconds}s")
-        await asyncio.sleep(e.seconds + random.uniform(2, 5))
-        return None
-    except (ChatWriteForbiddenError, UserBannedInChannelError, ChannelPrivateError) as e:
-        logger.warning(f"Permission error: {e}")
-        return None
-    except ConnectionError:
-        logger.error("Connection lost during send")
-        await asyncio.sleep(random.uniform(5, 15))
-        return None
-    except asyncio.CancelledError:
-        # السماح بالإلغاء بالخروج بشكل سليم
-        raise
-    except Exception as e:
-        logger.error(f"Send with typing error: {e}")
-        return None
+async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, file_path=None, item_type=None):
+    """إرسال مع إظهار Typing... للطرف الآخر مع إعادة المحاولة"""
+    MAX_RETRIES = 3
+    last_error = None
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            # إظهار جاري الكتابة أثناء التأخير (فقط في المحاولة الأولى)
+            if attempt == 0:
+                action_type = 'typing' if text else 'document'
+                remaining = delay
+                while remaining > 0:
+                    if emergency_stop_flag:
+                        raise asyncio.CancelledError()
+                    chunk = min(remaining, 4.0)
+                    try:
+                        async with client.action(chat_id, action_type):
+                            await asyncio.sleep(chunk)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        await asyncio.sleep(chunk)
+                    remaining -= chunk
+            else:
+                # انتظار قصير قبل إعادة المحاولة
+                await asyncio.sleep(random.uniform(2, 5))
+
+            # إرسال المحتوى
+            if file_path:
+                if item_type == "sticker" or _is_sticker_file(file_path):
+                    # إرسال كملصق حقيقي - force_document=False يمنع التحويل لملف
+                    msg = await client.send_file(
+                        chat_id, file_path,
+                        reply_to=reply_to,
+                        force_document=False
+                    )
+                else:
+                    msg = await client.send_file(chat_id, file_path, reply_to=reply_to)
+            elif text:
+                msg = await client.send_message(chat_id, text, reply_to=reply_to)
+            else:
+                return None
+            return msg
+        except FloodWaitError as e:
+            logger.warning(f"FloodWait in send_with_typing: {e.seconds}s (attempt {attempt+1})")
+            await asyncio.sleep(e.seconds + random.uniform(2, 5))
+            last_error = e
+            continue
+        except (ChatWriteForbiddenError, UserBannedInChannelError, ChannelPrivateError) as e:
+            logger.warning(f"Permission error: {e}")
+            return None  # لا فائدة من إعادة المحاولة
+        except ConnectionError as e:
+            logger.error(f"Connection lost during send (attempt {attempt+1})")
+            last_error = e
+            await asyncio.sleep(random.uniform(5, 15))
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Send error (attempt {attempt+1}/{MAX_RETRIES}): {e}")
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(random.uniform(2, 5))
+                continue
+    
+    logger.error(f"Send failed after {MAX_RETRIES} attempts: {last_error}")
+    return None
 
 def calc_sub_delay(text, settings):
     """حساب التأخير لتسطير السب"""
@@ -127,13 +153,13 @@ def calc_sub_delay(text, settings):
     else:  # gaussian
         return gaussian_delay(mn, mx)
 
-def calc_seq_delay(text_len, settings):
-    """حساب التأخير للتسطير المتسلسل"""
+def calc_seq_delay(item_type, content_len, settings):
+    """حساب التأخير للتسطير المتسلسل بناءً على نوع المحتوى وطوله"""
     mode = settings.get("seq_delay_mode", "length")
     mn = settings.get("seq_delay_min", 2.0)
     mx = settings.get("seq_delay_max", 15.0)
     if mode == "length":
-        return length_based_delay(text_len, mn, mx)
+        return smart_content_delay(item_type, content_len, mn, mx)
     else:  # random_range
         return random_range_delay(mn, mx)
 
@@ -402,19 +428,19 @@ async def _run_random(client, chat_id, target_uid, reply_to_id, task_id, gender)
 
 
 async def _run_sequential(client, chat_id, target_uid, reply_to_id, section_name, task_id):
-    """تشغيل التسطير المتسلسل مع حماية الحساب"""
+    """تشغيل التسطير المتسلسل مع حماية الحساب وإعادة المحاولة"""
     global emergency_stop_flag
     start = datetime.now()
     count = 0
     consecutive_errors = 0
-    MAX_CONSECUTIVE_ERRORS = 3
+    MAX_CONSECUTIVE_ERRORS = 5
     try:
         items = db.get_sequential_items(section_name)
-        for item in items:
+        for idx, item in enumerate(items):
             if emergency_stop_flag: break
             s = db.get_tsterr_settings()
-            content_len = len(item.get("content", "")) if item["type"] == "text" else 500
-            delay = calc_seq_delay(content_len, s)
+            content_len = len(item.get("content", "")) if item["type"] == "text" else 0
+            delay = calc_seq_delay(item["type"], content_len, s)
             rid = latest_user_msgs.get(chat_id, {}).get(target_uid, reply_to_id)
 
             try:
@@ -425,26 +451,33 @@ async def _run_sequential(client, chat_id, target_uid, reply_to_id, section_name
                     fp = item.get("file_path", "")
                     if fp and os.path.exists(fp):
                         msg = await send_with_typing(client, chat_id, delay, reply_to=rid, file_path=fp, item_type=item["type"])
+                    else:
+                        logger.warning(f"Sequential item {idx+1}: file not found: {fp}")
+                        continue  # تخطي الملف المفقود بدلاً من احتسابه كخطأ
 
                 if msg:
                     db.track_message(chat_id, msg.id)
                     count += 1
                     consecutive_errors = 0
+                    logger.info(f"Sequential [{section_name}] item {idx+1}/{len(items)} sent OK")
                 else:
                     consecutive_errors += 1
+                    logger.warning(f"Sequential [{section_name}] item {idx+1}/{len(items)} returned None")
             except FloodWaitError as e:
-                logger.warning(f"FloodWait in sequential tsterr: {e.seconds}s - stopping")
+                logger.warning(f"FloodWait in sequential tsterr: {e.seconds}s - waiting then continuing")
                 await asyncio.sleep(e.seconds + random.uniform(5, 15))
-                break
+                consecutive_errors += 1
+                continue  # استكمال بدلاً من التوقف
             except (ChatWriteForbiddenError, UserBannedInChannelError, ChannelPrivateError):
                 logger.warning(f"Permission lost in chat {chat_id} - stopping sequential")
                 break
             except ConnectionError:
-                logger.error("Connection error in sequential tsterr")
+                logger.error(f"Connection error in sequential item {idx+1} - waiting then continuing")
                 await asyncio.sleep(random.uniform(10, 30))
-                break
+                consecutive_errors += 1
+                continue  # استكمال بدلاً من التوقف
             except Exception as e:
-                logger.error(f"Sequential item error: {e}")
+                logger.error(f"Sequential item {idx+1} error: {e}")
                 consecutive_errors += 1
                 
             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:

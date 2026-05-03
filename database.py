@@ -151,7 +151,7 @@ class DataManager:
             return removed
         return None
 
-    def toggle_publish_group(self, group_id):
+    def toggle_publish_group_by_id(self, group_id):
         data = self.load_data()
         for g in data.get("publish_groups", []):
             if str(g["group_id"]) == str(group_id):

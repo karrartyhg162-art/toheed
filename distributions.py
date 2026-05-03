@@ -62,15 +62,70 @@ def weibull_retry_delay(attempt: int, base: float = 3.0) -> float:
     max_d = min_d * 3
     return weibull_delay(min_d, min(max_d, 120.0), shape=2.0)
 
-# ─── تأخير حسب طول النص (Length-based) ───
+# ─── تأخير حسب طول النص (Length-based) - محاكاة كتابة بشرية ───
 def length_based_delay(text_length: int, min_delay: float, max_delay: float) -> float:
-    """حساب التأخير بناءً على طول النص ضمن نطاق محدد
-    النص الأطول = تأخير أطول، النص الأقصر = تأخير أقصر"""
-    MAX_REF_LENGTH = 2000
-    ratio = min(text_length / MAX_REF_LENGTH, 1.0)
-    delay = min_delay + (max_delay - min_delay) * ratio
-    variation = random.uniform(0.9, 1.1)
-    return max(min_delay, min(delay * variation, max_delay))
+    """حساب التأخير بناءً على طول النص بمحاكاة سلوك الكتابة البشرية
+    
+    المنطق:
+    - أقل من 20 حرف → 2 إلى 4 ثواني (رسالة قصيرة جداً)
+    - من 20 إلى 100 حرف → 4 إلى 8 ثواني (رسالة متوسطة)
+    - أكثر من 100 حرف → 8 إلى 15 ثانية (رسالة طويلة)
+    
+    يتم إضافة تفاوت عشوائي طبيعي (±15%) لمحاكاة التغير البشري
+    """
+    # سرعة كتابة بشرية تقريبية: 4-7 أحرف في الثانية
+    # مع وقت تفكير قبل الكتابة: 1-2 ثانية
+    
+    think_time = random.uniform(0.8, 2.0)  # وقت التفكير قبل البدء بالكتابة
+    
+    if text_length <= 0:
+        # ملصقات ووسائط - تأخير بسيط
+        base_delay = random.uniform(1.5, 3.5)
+    elif text_length < 20:
+        # رسالة قصيرة جداً (كلمة أو كلمتين)
+        typing_speed = random.uniform(5.0, 7.0)  # أحرف/ثانية (سريع لأن النص قصير)
+        base_delay = think_time + (text_length / typing_speed)
+        base_delay = max(2.0, min(base_delay, 4.0))
+    elif text_length < 100:
+        # رسالة متوسطة
+        typing_speed = random.uniform(3.5, 5.5)  # أحرف/ثانية
+        base_delay = think_time + (text_length / typing_speed)
+        base_delay = max(4.0, min(base_delay, 8.0))
+    else:
+        # رسالة طويلة
+        typing_speed = random.uniform(3.0, 5.0)  # أحرف/ثانية
+        base_delay = think_time + (text_length / typing_speed)
+        base_delay = max(8.0, min(base_delay, 15.0))
+    
+    # تفاوت عشوائي طبيعي (±15%) - البشر لا يكتبون بنفس السرعة دائماً
+    human_variation = random.uniform(0.85, 1.15)
+    final_delay = base_delay * human_variation
+    
+    # ضمان البقاء ضمن النطاق المحدد من المستخدم
+    return max(min_delay, min(final_delay, max_delay))
+
+# ─── تأخير ذكي حسب نوع المحتوى ───
+def smart_content_delay(content_type: str, text_length: int = 0, min_delay: float = 2.0, max_delay: float = 15.0) -> float:
+    """حساب التأخير بناءً على نوع المحتوى وطوله
+    يحاكي السلوك البشري الطبيعي عند إرسال أنواع مختلفة من المحتوى
+    """
+    if content_type == "text":
+        return length_based_delay(text_length, min_delay, max_delay)
+    elif content_type == "sticker":
+        # الملصقات سريعة الإرسال - الشخص يختار ملصق ويرسله
+        delay = random.uniform(1.5, 4.0)
+        return max(min_delay, min(delay, max_delay))
+    elif content_type in ("photo", "animation"):
+        # الصور والصور المتحركة - وقت اختيار أطول قليلاً
+        delay = random.uniform(2.0, 5.0)
+        return max(min_delay, min(delay, max_delay))
+    elif content_type in ("video", "document"):
+        # الفيديو والملفات - وقت تحميل + اختيار
+        delay = random.uniform(3.0, 7.0)
+        return max(min_delay, min(delay, max_delay))
+    else:
+        # نوع غير معروف - تأخير متوسط
+        return random.uniform(min_delay, min(min_delay + 5.0, max_delay))
 
 # ─── دوال مساعدة ───
 def gaussian_reply_delay() -> float:
