@@ -10,6 +10,10 @@ from telethon.errors import (
 )
 from telethon.errors.rpcerrorlist import RPCError
 from telethon.sessions import StringSession
+from telethon.tl.types import (
+    DocumentAttributeSticker, InputStickerSetEmpty,
+    DocumentAttributeVideo, DocumentAttributeFilename
+)
 from config import API_ID, API_HASH, SESSION_NAME, STRING_SESSION, OWNER_ID
 from database import DataManager
 from distributions import (gaussian_delay, gaussian_pick_index, weighted_pick_index,
@@ -68,12 +72,53 @@ def _cleanup_latest_msgs():
 # ═══════════════════════════════════════
 # دالة إظهار "جاري الكتابة" وإرسال
 # ═══════════════════════════════════════
-def _is_sticker_file(file_path):
-    """التحقق مما إذا كان الملف ملصقاً بناءً على الامتداد"""
+def _get_sticker_send_kwargs(file_path):
+    """بناء معاملات الإرسال الصحيحة للملصقات حسب نوع الملف
+    .webp = ملصق ثابت
+    .webm = ملصق فيديو (يحتاج DocumentAttributeVideo)
+    .tgs  = ملصق متحرك (يحتاج mime_type خاص)
+    يُرجع None إذا لم يكن الملف ملصقاً
+    """
     if not file_path:
-        return False
+        return None
     ext = os.path.splitext(file_path)[1].lower()
-    return ext in ('.webp', '.webm', '.tgs')
+    
+    sticker_attr = DocumentAttributeSticker(
+        alt='⭐',
+        stickerset=InputStickerSetEmpty()
+    )
+    
+    if ext == '.webp':
+        # ملصق ثابت (Static Sticker)
+        return {
+            'attributes': [sticker_attr],
+            'force_document': False
+        }
+    elif ext == '.webm':
+        # ملصق فيديو (Video Sticker) - يحتاج أبعاد 512x512
+        video_attr = DocumentAttributeVideo(
+            duration=0,
+            w=512,
+            h=512,
+            round_message=False,
+            supports_streaming=False
+        )
+        return {
+            'attributes': [sticker_attr, video_attr],
+            'force_document': False,
+            'mime_type': 'video/webm'
+        }
+    elif ext == '.tgs':
+        # ملصق متحرك (Animated Sticker)
+        return {
+            'attributes': [
+                sticker_attr,
+                DocumentAttributeFilename(file_name='sticker.tgs')
+            ],
+            'force_document': False,
+            'mime_type': 'application/x-tgsticker'
+        }
+    return None
 
 async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, file_path=None, item_type=None):
     """إرسال مع إظهار Typing... للطرف الآخر مع إعادة المحاولة"""
@@ -104,12 +149,15 @@ async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, fil
 
             # إرسال المحتوى
             if file_path:
-                if item_type == "sticker" or _is_sticker_file(file_path):
-                    # إرسال كملصق حقيقي - force_document=False يمنع التحويل لملف
+                sticker_kwargs = _get_sticker_send_kwargs(file_path)
+                is_sticker = (item_type == "sticker") or (sticker_kwargs is not None)
+                
+                if is_sticker and sticker_kwargs:
+                    # إرسال كملصق حقيقي مع الخصائص الصحيحة لكل نوع
                     msg = await client.send_file(
                         chat_id, file_path,
                         reply_to=reply_to,
-                        force_document=False
+                        **sticker_kwargs
                     )
                 else:
                     msg = await client.send_file(chat_id, file_path, reply_to=reply_to)
