@@ -81,7 +81,9 @@ async def send_with_typing(client, chat_id, delay, reply_to=None, text=None, fil
             try:
                 async with client.action(chat_id, 'typing'):
                     await asyncio.sleep(chunk)
-            except (RPCError, ConnectionError):
+            except asyncio.CancelledError:
+                raise
+            except Exception:
                 # إذا فشل إظهار الكتابة نكمل بدونه
                 await asyncio.sleep(chunk)
             remaining -= chunk
@@ -404,6 +406,8 @@ async def _run_sequential(client, chat_id, target_uid, reply_to_id, section_name
     global emergency_stop_flag
     start = datetime.now()
     count = 0
+    consecutive_errors = 0
+    MAX_CONSECUTIVE_ERRORS = 3
     try:
         items = db.get_sequential_items(section_name)
         for item in items:
@@ -425,6 +429,9 @@ async def _run_sequential(client, chat_id, target_uid, reply_to_id, section_name
                 if msg:
                     db.track_message(chat_id, msg.id)
                     count += 1
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
             except FloodWaitError as e:
                 logger.warning(f"FloodWait in sequential tsterr: {e.seconds}s - stopping")
                 await asyncio.sleep(e.seconds + random.uniform(5, 15))
@@ -438,7 +445,12 @@ async def _run_sequential(client, chat_id, target_uid, reply_to_id, section_name
                 break
             except Exception as e:
                 logger.error(f"Sequential item error: {e}")
-                continue
+                consecutive_errors += 1
+                
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                logger.warning(f"Too many consecutive errors ({consecutive_errors}) - stopping sequential {task_id}")
+                break
+                
                 
     except asyncio.CancelledError:
         pass

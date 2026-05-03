@@ -49,7 +49,23 @@ async def run_account(account):
     print(f"\n🟢 [{account['name']}] Ready! Send /start to the Control Bot.")
     
     try:
-        await asyncio.gather(userbot.run_until_disconnected(), bot.run_until_disconnected())
+        while True:
+            try:
+                await asyncio.gather(userbot.run_until_disconnected(), bot.run_until_disconnected())
+                break
+            except ConnectionError as e:
+                print(f"[{account['name']}] Connection error: {e}. Reconnecting in 5s...")
+                await asyncio.sleep(5)
+                try:
+                    if not userbot.is_connected():
+                        await userbot.connect()
+                    if not bot.is_connected():
+                        await bot.connect()
+                except Exception as ex:
+                    print(f"[{account['name']}] Reconnect failed: {ex}")
+            except Exception as e:
+                print(f"[{account['name']}] Unexpected loop error: {e}. Retrying in 5s...")
+                await asyncio.sleep(5)
     except KeyboardInterrupt:
         pass
     finally:
